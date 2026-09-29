@@ -1,0 +1,911 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Writing and Reading Study</title>
+<style>
+  :root{ --bg:#F4F4F1; --fg:#171A18; --mut:#5C6159; --line:#CFD2C9; --card:#FFFFFF; --accent:#2C4A3A; }
+  *{box-sizing:border-box}
+  /* Block layout (not flex-centred) so tall screens never clip their top. */
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:Georgia,"Times New Roman",serif;
+       font-size:19px;line-height:1.6;padding:34px 0 60px;-webkit-font-smoothing:antialiased}
+  #app{width:min(760px,92vw);margin:0 auto}
+  .card{background:var(--card);border:1px solid var(--line);padding:34px 38px}
+  h1{font-size:26px;margin:0 0 18px;line-height:1.25}
+  h2{font-size:21px;margin:0 0 14px}
+  p{margin:0 0 14px;max-width:62ch}
+  .mut{color:var(--mut);font-size:16px}
+  button{font-family:inherit;font-size:17px;padding:11px 22px;background:var(--accent);color:#fff;border:none;cursor:pointer}
+  button.ghost{background:none;color:var(--fg);border:1px solid var(--line)}
+  button:disabled{opacity:.4;cursor:default}
+  button:focus-visible{outline:3px solid #7FA98F;outline-offset:2px}
+  .row{display:flex;gap:12px;align-items:center;margin-top:24px;flex-wrap:wrap}
+  input[type=text],textarea,select{font-family:inherit;font-size:17px;padding:9px 11px;border:1px solid var(--line);background:#fff;width:100%}
+  input[type=checkbox]{width:18px;height:18px}
+  textarea{min-height:82px;resize:vertical}
+  label.q{display:block;margin:18px 0 6px;font-size:16px;color:var(--mut)}
+  .opt{display:block;width:100%;text-align:left;background:#fff;color:var(--fg);border:1px solid var(--line);
+       padding:12px 16px;margin-bottom:8px;cursor:pointer;font-size:17.5px;line-height:1.5}
+  .opt:hover{border-color:var(--accent)}
+  .opt.sel{border-color:var(--accent);border-width:2px;background:#F2F6F3}
+  .slot{margin-bottom:26px}
+  #stage{min-height:200px;display:flex;align-items:center;justify-content:center;padding:34px 24px;text-align:center}
+  #sentence{font-size:23px;line-height:1.55;max-width:52ch}
+  .fix{font-size:30px;color:var(--mut)}
+  .hint{text-align:center;color:var(--mut);font-size:15px;margin-top:10px}
+  .prog{height:3px;background:var(--line);margin-bottom:26px}
+  .prog>i{display:block;height:3px;background:var(--accent);width:0}
+  ol.sent{padding-left:26px}
+  ol.sent li{margin-bottom:9px;cursor:pointer}
+  ol.sent li:hover{color:var(--accent)}
+  ol.sent li.sel{font-weight:bold;color:var(--accent)}
+  .slider{width:100%;margin:14px 0 4px;accent-color:var(--accent)}
+  .slider.untouched{accent-color:#A9AEA6;opacity:.75}
+  .ends{display:flex;justify-content:space-between;font-size:15px;color:var(--mut)}
+  .rate{margin-bottom:22px}
+  .quote{font-size:20px;border-left:3px solid var(--line);padding-left:17px;margin:0 0 4px}
+  .warnbox{border-left:4px solid #8A6A17;padding-left:17px;margin:18px 0}
+  .testbanner{background:#FFF4D6;border:1px solid #D9B44A;color:#5B4708;padding:10px 16px;margin-bottom:14px;font-size:15px}
+  .fail{border-left:4px solid #9A3B2E;padding-left:17px;margin:18px 0}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+/* ============================================================
+   SILENT EDITS - ONLINE VERSION 4
+   Runs in any desktop browser; host on a static host such as
+   GitHub Pages. See the accompanying guide for setup.
+
+   WHAT VERSION 4 CHANGES, AND WHY
+   1. Balanced design: 10 passages per person. The first 2 are
+      practice (never edited); the next 8 are real, with each
+      edit size (0,1,2,3 rungs) used exactly twice per person,
+      in random order, on randomly assigned passages. This gives
+      every participant a within-person dose-response curve.
+   2. Target measures are buried among filler ratings, and the
+      justification prompt is generic, so nothing on screen names
+      the manipulated dimension (claim strength).
+   3. Quality controls: keyboard-only gate, sliders must be
+      touched before Continue, two attention checks, tab-switch
+      counts, fast-session flags, one-attempt-per-browser marker.
+   4. The strongest rung adds an invented statistic (digits).
+      That is a different KIND of edit, so it is flagged in the
+      data (presentedIsStat / authoredIsStat) and should be
+      analysed as its own condition, not the end of a smooth
+      wording gradient.
+   5. Submission retries and is de-duplicated server-side.
+   ============================================================ */
+
+const CONFIG = {
+  version: "4.0.0",
+  advanceKey: " ",
+  practiceTrials: 2,
+  stepsForReal: [0, 0, 1, 1, 2, 2, 3, 3],  // each edit size twice per person
+  minRT: 100,
+  maxRT: 15000,
+  polishDelayMs: [900, 1600],
+  meaningThreshold: 80,        // "still says what you meant" below this = noticed something
+  warnedSplit: false,          // true = half of participants get an up-front warning
+  minProbeChars: 5,
+  minSessionSeconds: 360,      // faster than this is flagged (not excluded automatically)
+  minMedianReadMs: 250,        // median per-sentence reading time below this is flagged
+  attn2TrialIndex: 3,          // which real trial carries the slider attention check
+
+  submitUrl: "https://script.google.com/macros/s/AKfycbyVUBbx9_vbAh02A63NbPLq5GwAUtL2u5Pn9xMxSxg8RrNn5uYGnVjCDUrKByIgRGoT/exec",               // Google Apps Script Web App URL (see guide)
+  irbApproved: false,          // set true ONLY after IRB/SRC approval is signed
+  contactEmail: "",
+  sponsorName: "",
+  sponsorAffiliation: "",
+  sponsorEmail: "",
+  irbStatement: "",            // e.g. "Reviewed and approved by <body> on <date>."
+  compensationText: "",        // e.g. "You will receive HK$50 via ..." or leave blank
+  collectPlatformId: false,    // true only if using Prolific/similar AND consent mentions it
+  completionUrl: ""            // e.g. Prolific completion link, shown after submission
+};
+
+const URLP = new URLSearchParams(location.search);
+const PIPELINE_TEST = URLP.has("pipelinetest");
+const ALLOW_TOUCH   = URLP.has("allowtouch");
+const TEST_MODE     = !CONFIG.irbApproved;
+
+/* ------------------------------------------------------------
+   STIMULI: 10 everyday adult topics, four sentences each.
+   One critical slot per passage (grad, five rungs) plus three
+   ordinary slots (opts). Rungs share a template so wording
+   differences are confined to the hedge / boost words.
+------------------------------------------------------------ */
+const STIMULI = [
+  { id:"P01", topic:"Introducing a four-day work week", criticalIndex:1, slots:[
+    { opts:["Some companies have begun trialling a four-day working week.",
+            "A four-day week is now being tested by a number of employers.",
+            "Several companies have already shifted staff onto four days."] },
+    { grad:["A shorter week might possibly help productivity across a team.",
+            "A shorter week could well help productivity across a team.",
+            "A shorter week helps productivity a good deal across a team.",
+            "A shorter week clearly improves productivity across a team.",
+            "A shorter week improves productivity by 23% across a team."] },
+    { opts:["The counter-argument is that coordinating client schedules gets harder.",
+            "Against this, coordinating with clients across five days gets harder.",
+            "The obvious cost falls on scheduling meetings with outside partners."] },
+    { opts:["Any change would need payroll and client-facing teams on board.",
+            "Shift changes affect payroll systems and client-facing staff too.",
+            "Payroll and client relationships would have to be considered as well."] } ] },
+
+  { id:"P02", topic:"Allowing phones in meetings", criticalIndex:2, slots:[
+    { opts:["Workplaces disagree about whether phones belong in meetings.",
+            "Policies on phone use during meetings vary widely between teams.",
+            "Different companies have landed in very different places on this."] },
+    { opts:["Some teams use phones deliberately for notes and quick research.",
+            "Other meetings build phone use into polls and shared documents.",
+            "In some teams the phone is treated as a working tool."] },
+    { grad:["A phone on the table might possibly divide a colleague's attention.",
+            "A phone on the table could well divide a colleague's attention.",
+            "A phone on the table divides a colleague's attention a good deal.",
+            "A phone on the table plainly divides a colleague's attention badly.",
+            "A phone on the table divides attention for 68% of colleagues."] },
+    { opts:["Whatever the policy, it works better when the team helped write it.",
+            "Rules a team helped design tend to be followed more willingly.",
+            "Policies imposed without consultation are the ones that get ignored."] } ] },
+
+  { id:"P03", topic:"Having a workplace dress code", criticalIndex:1, slots:[
+    { opts:["Dress code policies are debated in almost every workplace.",
+            "Few office rules are argued over as often as dress code is.",
+            "Dress code is a perennial argument in modern offices."] },
+    { grad:["A dress code might possibly reduce visible differences in income.",
+            "A dress code could well reduce visible differences in income.",
+            "A dress code reduces visible differences in income a good deal.",
+            "A dress code plainly removes visible differences in income.",
+            "A dress code cuts visible income signalling by 40% at work."] },
+    { opts:["Critics reply that it suppresses ordinary self-expression.",
+            "Opponents argue it removes a normal outlet for self-expression.",
+            "The objection is that it flattens something employees value."] },
+    { opts:["The cost to employees is rarely discussed as carefully as it should be.",
+            "What staff actually pay is often left out of the argument.",
+            "Nobody talks much about the price of a full work wardrobe."] } ] },
+
+  { id:"P04", topic:"Capping overtime hours", criticalIndex:2, slots:[
+    { opts:["Several companies have introduced caps on overtime hours.",
+            "Limits on weekly overtime have been trialled in some firms.",
+            "A few employers have written overtime ceilings into policy."] },
+    { opts:["The stated aim is usually to protect staff sleep and health.",
+            "Such limits are typically framed as protecting sleep and wellbeing.",
+            "The justification given is almost always sleep and wellbeing."] },
+    { grad:["Capping overtime might possibly leave overall output alone.",
+            "Capping overtime could well leave overall output alone.",
+            "Capping overtime leaves overall output largely alone.",
+            "Capping overtime plainly leaves overall output untouched.",
+            "Capping overtime moved overall output by under 2% overall."] },
+    { opts:["Enforcement across many teams is the practical difficulty.",
+            "Coordinating a cap across departments is the harder problem.",
+            "The hard part is getting every manager to hold the line."] } ] },
+
+  { id:"P05", topic:"Going cashless in shops and cafes", criticalIndex:1, slots:[
+    { opts:["Many cafes and shops have moved away from accepting cash.",
+            "Cash is disappearing from shops and cafes in a lot of places.",
+            "Most cafes now expect a card or a phone payment."] },
+    { grad:["Card payment might possibly shorten the queue at busy periods.",
+            "Card payment could well shorten the queue at busy periods.",
+            "Card payment shortens the queue a good deal at busy times.",
+            "Card payment plainly shortens the queue at busy periods.",
+            "Card payment shortened queues by nine minutes on average."] },
+    { opts:["Banks can also see exactly what customers have been buying.",
+            "Spending becomes visible to banks in a way cash never was.",
+            "Every purchase now appears on somebody's account statement."] },
+    { opts:["Customers without a card are the ones who lose out.",
+            "The system fails whoever has not been able to register a card.",
+            "Anyone outside the system simply cannot pay for their order."] } ] },
+
+  { id:"P06", topic:"Using peer ratings in performance reviews", criticalIndex:2, slots:[
+    { opts:["Peer feedback is a common part of workplace performance reviews.",
+            "Peer input appears in most company review processes now.",
+            "Most companies now include some form of colleague feedback."] },
+    { opts:["Judging one person's contribution inside a team is notoriously hard.",
+            "Separating one person's contribution from the team's is difficult.",
+            "Working out who actually did what is the recurring problem."] },
+    { grad:["Peer rating might possibly make the spread of scores fairer.",
+            "Peer rating could well make the spread of scores fairer.",
+            "Peer rating makes the spread of scores a good deal fairer.",
+            "Peer rating plainly makes the spread of scores much fairer.",
+            "Peer rating made score distribution fairer in 71% of teams."] },
+    { opts:["Whether colleagues rate each other honestly is a separate question.",
+            "Whether such ratings are honest is a question in its own right.",
+            "Nobody has shown that colleagues rate each other truthfully."] } ] },
+
+  { id:"P07", topic:"Charging deposits on reusable cups", criticalIndex:1, slots:[
+    { opts:["Several cafes now charge a small deposit on reusable cups.",
+            "Reusable-cup deposit schemes are appearing in more cafes.",
+            "A number of cities have tried deposits on takeaway cups."] },
+    { grad:["A small deposit might possibly raise the return rate of cups.",
+            "A small deposit could well raise the return rate of cups.",
+            "A small deposit raises the return rate of cups a good deal.",
+            "A small deposit plainly raises the return rate of cups.",
+            "A small deposit raised the return rate of used cups by 34%."] },
+    { opts:["Some cafes worry that tracking deposits adds work for staff.",
+            "Staff time spent handling returned cups is a common concern.",
+            "The extra handling falls on already busy counter staff."] },
+    { opts:["Whether customers notice a small deposit at all is unclear.",
+            "It is not obvious that people even register a small deposit.",
+            "A deposit this small may simply go unnoticed."] } ] },
+
+  { id:"P08", topic:"Self-checkout machines in supermarkets", criticalIndex:2, slots:[
+    { opts:["Self-checkout machines have spread quickly through supermarkets.",
+            "Most large supermarkets now have rows of self-checkout machines.",
+            "Self-service tills are now a standard sight in big shops."] },
+    { opts:["Shoppers who buy only a few items tend to prefer them.",
+            "They are most popular with people buying a handful of things.",
+            "Customers with small baskets use them far more often."] },
+    { grad:["Self-checkout might possibly make shopping feel impersonal.",
+            "Self-checkout could well make shopping feel impersonal.",
+            "Self-checkout makes shopping feel impersonal a good deal.",
+            "Self-checkout plainly makes shopping feel impersonal.",
+            "Self-checkout made shopping impersonal for 58% of users."] },
+    { opts:["Store owners point instead to the savings on staffing costs.",
+            "For retailers the appeal is mostly lower labour costs.",
+            "The financial case for stores rests on reduced staffing."] } ] },
+
+  { id:"P09", topic:"Reading on paper rather than on screens", criticalIndex:1, slots:[
+    { opts:["Readers are split between paper books and e-books.",
+            "Paper and e-books each have loyal readers in every age group.",
+            "Few habits divide readers as neatly as paper versus screen."] },
+    { grad:["Reading on paper might possibly help readers recall details.",
+            "Reading on paper could well help readers recall details.",
+            "Reading on paper helps readers recall details a good deal.",
+            "Reading on paper plainly helps readers recall details.",
+            "Reading on paper helped readers recall 19% more details."] },
+    { opts:["E-readers are easier to carry and cheaper to stock up on.",
+            "E-books win on lighter luggage and instant purchases.",
+            "For travellers the convenience of an e-reader is hard to beat."] },
+    { opts:["Much of the preference probably comes down to habit.",
+            "Personal habit likely explains more than the format itself.",
+            "Most people simply stick with whatever they grew up reading."] } ] },
+
+  { id:"P10", topic:"Bike-share schemes in cities", criticalIndex:2, slots:[
+    { opts:["Many cities now run public bike-share schemes.",
+            "Bike-share stations have appeared across a growing number of cities.",
+            "Rental bikes on street corners are now common in big cities."] },
+    { opts:["Most trips on these bikes are short and close to home.",
+            "Typical rides are brief and stay within a few streets.",
+            "Users tend to take them for short local journeys."] },
+    { grad:["Bike-share might possibly reduce short car trips in a city.",
+            "Bike-share could well reduce short car trips in a city.",
+            "Bike-share reduces short car trips a good deal in a city.",
+            "Bike-share plainly reduces short car trips in a city.",
+            "Bike-share cut short car trips by 12% across a whole city."] },
+    { opts:["Whether riders would otherwise have driven is hard to measure.",
+            "It is difficult to know what riders would have done instead.",
+            "Nobody can easily say which trips would have been by car."] } ] }
+];
+
+const SCREENER = {
+  passage: "Rivers carry more than water. Every stream moves sediment downhill, and over long periods that sediment builds the flat land where most farming happens. When a river is dammed, the sediment settles behind the wall instead of travelling onward. The delta downstream then stops growing and begins, slowly, to sink. Engineers have known this for a century, but the effect is gradual enough that it rarely shapes the decision to build. In several large deltas the land is now subsiding faster than the sea is rising, which means the more urgent problem is not the ocean arriving but the ground departing.",
+  questions: [
+    { q:"According to the passage, what settles behind a dam?", a:["Sediment","Fish","Salt","Rainfall"], correct:0 },
+    { q:"The passage says deltas begin to do what after damming?", a:["Expand","Sink","Freeze","Split"], correct:1 },
+    { q:"What does the passage call the more urgent problem?", a:["Sea level rise","Storms","The ground sinking","Loss of fishing"], correct:2 }
+  ]
+};
+
+/* ============================================================
+   MACHINERY
+   ============================================================ */
+const app = document.getElementById("app");
+
+const DATA = {
+  meta: {
+    configVersion: CONFIG.version,
+    startedISO: new Date().toISOString(),
+    userAgent: navigator.userAgent,
+    screen: { w: screen.width, h: screen.height, dpr: devicePixelRatio },
+    viewport: { w: innerWidth, h: innerHeight },
+    tabSwitches: 0,
+    pipelineTest: PIPELINE_TEST
+  },
+  consent: {}, participant: {}, screener: {}, practice: [], trials: [],
+  attentionCheck: null, suspicionCheck: null, quality: {}, frames: {}
+};
+if (CONFIG.collectPlatformId) {
+  DATA.meta.platform = { pid: URLP.get("PROLIFIC_PID") || "", study: URLP.get("STUDY_ID") || "", session: URLP.get("SESSION_ID") || "" };
+}
+
+let TRIAL_PLAN = [], pos = 0, practiceDone = false;
+
+document.addEventListener("visibilitychange", function(){
+  if (document.hidden) DATA.meta.tabSwitches++;
+});
+
+function backup(){
+  try { localStorage.setItem("silentedits:backup", JSON.stringify(DATA)); } catch (e) {}
+}
+function markDone(){
+  if (TEST_MODE || PIPELINE_TEST) return;
+  try { localStorage.setItem("silentedits:done", "1"); } catch (e) {}
+}
+function alreadyDone(){
+  if (TEST_MODE || PIPELINE_TEST) return false;
+  try { return localStorage.getItem("silentedits:done") === "1"; } catch (e) { return false; }
+}
+function isTouchOnly(){
+  try { return matchMedia("(any-pointer: coarse)").matches && !matchMedia("(any-pointer: fine)").matches; }
+  catch (e) { return false; }
+}
+
+const FrameMon = (function(){
+  let last = null, intervals = [], running = false;
+  function tick(ts){
+    if (!running) return;
+    if (last !== null) intervals.push(ts - last);
+    last = ts;
+    requestAnimationFrame(tick);
+  }
+  return {
+    start: function(){ running = true; last = null; intervals = []; requestAnimationFrame(tick); },
+    stop: function(){
+      running = false;
+      if (!intervals.length) return { n: 0 };
+      const s = intervals.slice().sort(function(a,b){ return a-b; });
+      const med = s[Math.floor(s.length/2)];
+      const dropped = intervals.filter(function(x){ return x > med * 1.75; }).length;
+      return { n: intervals.length, medianMs: +med.toFixed(2), estRefreshHz: +(1000/med).toFixed(1),
+               maxMs: +Math.max.apply(null, intervals).toFixed(2), droppedFrames: dropped,
+               droppedPct: +(100*dropped/intervals.length).toFixed(2) };
+    }
+  };
+})();
+
+/* Paint first, THEN start the clock. */
+function onPainted(fn){
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){ fn(performance.now()); }); });
+}
+
+function screenEl(html){
+  const banner = TEST_MODE
+    ? '<div class="testbanner"><b>TEST MODE</b> \u2014 not approved for participants. Responses are not being submitted.</div>' : '';
+  app.innerHTML = banner + '<div class="card">' + html + '</div>';
+  window.scrollTo(0, 0);
+}
+
+function shuffle(a){
+  const x = a.slice();
+  for (let i = x.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = x[i]; x[i] = x[j]; x[j] = t;
+  }
+  return x;
+}
+function median(a){
+  if (!a.length) return null;
+  const s = a.slice().sort(function(x,y){ return x-y; });
+  const m = Math.floor(s.length/2);
+  return s.length % 2 ? s[m] : (s[m-1] + s[m]) / 2;
+}
+function esc(t){ return String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+/* Random passages per person; practice trials are never edited; real trials
+   get a balanced set of edit sizes in random order. */
+function buildPlan(){
+  const need = CONFIG.practiceTrials + CONFIG.stepsForReal.length;
+  if (STIMULI.length < need) throw new Error("Need at least " + need + " passages.");
+  const pool = shuffle(STIMULI).slice(0, need);
+  const steps = shuffle(CONFIG.stepsForReal);
+  return pool.map(function(st, i){
+    return { stim: st, step: i < CONFIG.practiceTrials ? 0 : steps[i - CONFIG.practiceTrials] };
+  });
+}
+
+function shiftRung(chosen, step, max){
+  if (step === 0) return { level: chosen, dir: 0, applied: 0 };
+  if (chosen + step <= max) return { level: chosen + step, dir: 1, applied: step };
+  if (chosen - step >= 0)   return { level: chosen - step, dir: -1, applied: step };
+  const up = max - chosen, down = chosen;
+  return up >= down ? { level: max, dir: 1, applied: up } : { level: 0, dir: -1, applied: down };
+}
+
+/* Sliders must be touched (pointer / arrow keys) before Continue works. */
+function sliderHTML(id, label, l, r, start){
+  return '<div class="rate"><label class="q" for="' + id + '">' + label + '</label>' +
+    '<input type="range" class="slider untouched" id="' + id + '" min="0" max="100" value="' + (start == null ? 50 : start) + '">' +
+    '<div class="ends"><span>' + l + '</span><span>' + r + '</span></div></div>';
+}
+function wireSliders(ids, btn, extraOk){
+  const touched = {};
+  function check(){ btn.disabled = !(ids.every(function(i){ return touched[i]; }) && (!extraOk || extraOk())); }
+  ids.forEach(function(i){
+    const el = document.getElementById(i);
+    function mark(){ touched[i] = true; el.classList.remove("untouched"); check(); }
+    el.addEventListener("pointerdown", mark);
+    el.addEventListener("input", mark);
+    el.addEventListener("keydown", function(e){
+      if (/^(Arrow|Home$|End$|Page)/.test(e.key)) mark();
+    });
+  });
+  check();
+  return check;
+}
+
+/* ============================ SCREENS ============================ */
+
+function screenGate(){
+  if (isTouchOnly() && !ALLOW_TOUCH){
+    return screenEl('<h1>Please use a computer</h1><p>This study needs a computer or laptop with a keyboard. ' +
+      'It cannot be completed on a phone or tablet. Please reopen this link on a computer.</p>');
+  }
+  if (alreadyDone()){
+    return screenEl('<h1>Thank you</h1><p>It looks like you have already taken part in this study from this browser, ' +
+      'so you do not need to do it again.</p>');
+  }
+  screenConsent();
+}
+
+function screenConsent(){
+  screenEl(
+    '<h1>Writing and Reading Study</h1>' +
+    '<p>Thank you for considering taking part. This is a study about how people write and read short opinion passages. ' +
+    'It takes about 20\u201325 minutes and needs a <b>computer or laptop with a keyboard</b> (not a phone or tablet).</p>' +
+    '<p>On each round you will choose between phrasings to build a short passage on an everyday topic, then read back a ' +
+    'revised version one sentence at a time, and answer a few short questions. Some details of the study cannot be ' +
+    'explained until you finish; everything will be explained at the end.</p>' +
+    '<p>Taking part is voluntary. You may stop at any time by closing this window, and nothing will be kept unless you ' +
+    'reach the final screen. No name, email address or other identifying information is collected \u2014 only your age, ' +
+    'gender, a few background questions and your responses. Because responses are anonymous, they cannot be removed ' +
+    'after submission. Please do not type personal details into any text box.</p>' +
+    '<p>Data collected over the internet can never be guaranteed completely secure: there is always a small possibility of ' +
+    'tampering or a security breach from an outside source. Responses are stored in a password-protected file that only ' +
+    'the researcher can access.</p>' +
+    (CONFIG.compensationText ? '<p>' + esc(CONFIG.compensationText) + '</p>' : '') +
+    (CONFIG.irbStatement ? '<p class="mut">' + esc(CONFIG.irbStatement) + '</p>' : '') +
+    '<p class="mut">Questions about the study: ' + esc(CONFIG.contactEmail || "[researcher email]") +
+    '. Adult Sponsor: ' + esc(CONFIG.sponsorName || "[sponsor name]") +
+    (CONFIG.sponsorAffiliation ? ', ' + esc(CONFIG.sponsorAffiliation) : '') + '.</p>' +
+    '<label class="row" style="margin-top:22px"><input type="checkbox" id="age18"> I am 18 years of age or older</label>' +
+    '<label class="row"><input type="checkbox" id="consent"> I have read the above and agree to take part</label>' +
+    '<div class="row"><button id="go" disabled>Begin</button></div>'
+  );
+  function ready(){ document.getElementById("go").disabled = !(document.getElementById("age18").checked && document.getElementById("consent").checked); }
+  document.getElementById("age18").onchange = ready;
+  document.getElementById("consent").onchange = ready;
+  document.getElementById("go").onclick = function(){
+    DATA.consent = { age18: true, consented: true, ISO: new Date().toISOString() };
+    DATA.participant.code = "P-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+    DATA.participant.warned = CONFIG.warnedSplit ? Math.random() < 0.5 : false;
+    FrameMon.start();
+    screenIntake();
+  };
+}
+
+function screenIntake(){
+  screenEl(
+    '<h2>A few questions first</h2>' +
+    '<p class="mut">These help us describe who took part. Skip anything you would rather not answer.</p>' +
+    '<label class="q" for="age">Age</label><input type="text" id="age" inputmode="numeric">' +
+    '<label class="q" for="gender">Gender</label>' +
+    '<select id="gender"><option value="">\u2014</option><option>Woman</option><option>Man</option>' +
+    '<option>Non-binary</option><option>Prefer not to say</option><option>Prefer to self-describe</option></select>' +
+    '<label class="q" for="l1">Is English your first language?</label>' +
+    '<select id="l1"><option value="">\u2014</option><option>Yes</option><option>No</option></select>' +
+    '<label class="q" for="conf">Confidence in your English reading and writing (1 = not at all, 7 = extremely)</label>' +
+    '<input type="range" id="conf" class="slider" min="1" max="7" value="4" step="1">' +
+    '<div class="ends"><span>1</span><span>7</span></div>' +
+    '<label class="q" for="edu">Highest level of education completed</label>' +
+    '<select id="edu"><option value="">\u2014</option><option>High school or less</option>' +
+    '<option>Some college or vocational training</option><option>Bachelor\u2019s degree</option><option>Graduate degree</option></select>' +
+    '<div class="row"><button id="go">Continue</button></div>'
+  );
+  document.getElementById("go").onclick = function(){
+    const p = DATA.participant;
+    p.age = document.getElementById("age").value.trim();
+    p.gender = document.getElementById("gender").value;
+    p.englishL1 = document.getElementById("l1").value;
+    p.englishConfidence = +document.getElementById("conf").value;
+    p.education = document.getElementById("edu").value;
+    backup();
+    screenScreenerRead();
+  };
+}
+
+function screenScreenerRead(){
+  screenEl('<h2>Short reading task</h2>' +
+    '<p>Read the passage below at your normal pace. When you have finished, press <b>Continue</b>. ' +
+    'You will then answer three questions about it, without the passage.</p>' +
+    '<div class="row"><button id="show">Show the passage</button></div>');
+  document.getElementById("show").onclick = function(){
+    screenEl('<p style="font-size:19px;line-height:1.7">' + SCREENER.passage + '</p>' +
+             '<div class="row"><button id="done">Continue</button></div>');
+    onPainted(function(t0){
+      document.getElementById("done").onclick = function(){
+        DATA.screener.readMs = Math.round(performance.now() - t0);
+        DATA.screener.words = SCREENER.passage.split(/\s+/).length;
+        DATA.screener.wpm = Math.round(DATA.screener.words / (DATA.screener.readMs / 60000));
+        screenScreenerQs();
+      };
+    });
+  };
+}
+
+function screenScreenerQs(){
+  let html = '<h2>Three questions</h2>';
+  SCREENER.questions.forEach(function(q, i){
+    html += '<div class="slot"><label class="q">' + (i+1) + '. ' + q.q + '</label>';
+    q.a.forEach(function(opt, j){ html += '<button class="opt" data-q="' + i + '" data-a="' + j + '">' + opt + '</button>'; });
+    html += '</div>';
+  });
+  html += '<div class="row"><button id="go" disabled>Continue</button></div>';
+  screenEl(html);
+  const picks = {};
+  Array.prototype.forEach.call(document.querySelectorAll(".opt"), function(b){
+    b.onclick = function(){
+      const qi = b.dataset.q;
+      Array.prototype.forEach.call(document.querySelectorAll('.opt[data-q="' + qi + '"]'), function(o){ o.classList.remove("sel"); });
+      b.classList.add("sel");
+      picks[qi] = +b.dataset.a;
+      document.getElementById("go").disabled = Object.keys(picks).length < SCREENER.questions.length;
+    };
+  });
+  document.getElementById("go").onclick = function(){
+    let correct = 0;
+    SCREENER.questions.forEach(function(q, i){ if (picks[i] === q.correct) correct++; });
+    DATA.screener.answers = picks; DATA.screener.correct = correct; DATA.screener.total = SCREENER.questions.length;
+    backup();
+    screenInstructions();
+  };
+}
+
+function screenInstructions(){
+  const warn = DATA.participant.warned
+    ? '<div class="warnbox"><p><b>Please note:</b> the assistant sometimes changes how strongly a sentence makes its claim, ' +
+      'not only its wording. Read carefully.</p></div>' : '';
+  screenEl('<h2>What you will be doing</h2>' +
+    '<p>On each round you will see a topic and a draft of four sentences. For each sentence you choose between several ' +
+    'phrasings. Those choices make the draft yours.</p>' +
+    '<p>A writing assistant then polishes your draft and hands it back. You will read the polished version <b>one sentence ' +
+    'at a time</b>: press the <b>space bar</b> to move on. You cannot go back, so read each sentence properly before advancing.</p>' +
+    '<p>Afterwards you will answer a few short questions about the draft and your choices.</p>' + warn +
+    '<p class="mut">Please find a quiet moment without interruptions \u2014 you cannot pause once a round has started. ' +
+    'You will start with two practice rounds.</p>' +
+    '<div class="row"><button id="go">Start practice</button></div>');
+  document.getElementById("go").onclick = function(){
+    TRIAL_PLAN = buildPlan(); pos = 0; practiceDone = false;
+    DATA.meta.plan = TRIAL_PLAN.map(function(t){ return { id: t.stim.id, step: t.step }; });
+    runTrial();
+  };
+}
+
+function screenPracticeDone(){
+  screenEl('<h2>Practice finished</h2><p>The real rounds start after one quick check. There are ' + CONFIG.stepsForReal.length +
+    ' rounds. You may take a short break between rounds whenever you need one.</p>' +
+    '<div class="row"><button id="go">Continue</button></div>');
+  document.getElementById("go").onclick = screenAttentionCheck;
+}
+
+/* Standalone instructional check: not tied to any passage. */
+function screenAttentionCheck(){
+  screenEl('<h2>Quick check</h2>' +
+    '<p class="mut">This question checks that instructions are being read \u2014 it is not one of the study passages.</p>' +
+    '<label class="q">To show you are reading carefully, please select \u201cOption B\u201d below.</label>' +
+    '<button class="opt" data-v="a">Option A</button><button class="opt" data-v="b">Option B</button><button class="opt" data-v="c">Option C</button>' +
+    '<div class="row"><button id="go" disabled>Continue</button></div>');
+  let pick = null;
+  Array.prototype.forEach.call(document.querySelectorAll(".opt"), function(b){
+    b.onclick = function(){
+      Array.prototype.forEach.call(document.querySelectorAll(".opt"), function(o){ o.classList.remove("sel"); });
+      b.classList.add("sel"); pick = b.dataset.v; document.getElementById("go").disabled = false;
+    };
+  });
+  document.getElementById("go").onclick = function(){
+    DATA.attentionCheck = { picked: pick, passed: pick === "b" };
+    backup();
+    runTrial();
+  };
+}
+
+function runTrial(){
+  if (pos === CONFIG.practiceTrials && !practiceDone){ practiceDone = true; return screenPracticeDone(); }
+  if (pos >= TRIAL_PLAN.length) return screenEnd();
+  const item = TRIAL_PLAN[pos];
+  const practice = pos < CONFIG.practiceTrials;
+  stageSlider(item, {
+    index: practice ? pos : pos - CONFIG.practiceTrials, practice: practice,
+    passageId: item.stim.id, topic: item.stim.topic,
+    stepAssigned: item.step, criticalIndex: item.stim.criticalIndex,
+    warned: DATA.participant.warned, tabSwitchesAtStart: DATA.meta.tabSwitches
+  });
+}
+
+function stageSlider(item, rec){
+  const denom = CONFIG.stepsForReal.length;
+  screenEl((rec.practice ? '<p class="mut">Practice round ' + (rec.index + 1) + ' of ' + CONFIG.practiceTrials + '</p>'
+                         : '<div class="prog"><i style="width:' + Math.round(100 * rec.index / denom) + '%"></i></div>') +
+    '<h2>' + esc(item.stim.topic) + '</h2>' +
+    sliderHTML("s", "Before you start: how much do you support this idea?", "Strongly oppose", "Strongly support") +
+    '<div class="row"><button id="go" disabled>Continue</button></div>');
+  wireSliders(["s"], document.getElementById("go"));
+  document.getElementById("go").onclick = function(){
+    rec.sliderPre = +document.getElementById("s").value;
+    stageCompose(item, rec);
+  };
+}
+
+function stageCompose(item, rec){
+  let html = '<h2>Choose your phrasing</h2><p class="mut">Pick the version of each sentence you would rather have in your draft.</p>';
+  item.stim.slots.forEach(function(slot, i){
+    const list = slot.grad || slot.opts;
+    html += '<div class="slot"><label class="q">Sentence ' + (i + 1) + '</label>';
+    list.forEach(function(txt, j){ html += '<button class="opt" data-s="' + i + '" data-o="' + j + '">' + txt + '</button>'; });
+    html += '</div>';
+  });
+  html += '<div class="row"><button id="go" disabled>Send to the assistant</button></div>';
+  screenEl(html);
+  const chosen = {};
+  Array.prototype.forEach.call(document.querySelectorAll(".opt"), function(b){
+    b.onclick = function(){
+      const si = b.dataset.s;
+      Array.prototype.forEach.call(document.querySelectorAll('.opt[data-s="' + si + '"]'), function(o){ o.classList.remove("sel"); });
+      b.classList.add("sel"); chosen[si] = +b.dataset.o;
+      document.getElementById("go").disabled = Object.keys(chosen).length < item.stim.slots.length;
+    };
+  });
+  document.getElementById("go").onclick = function(){
+    const ci = item.stim.criticalIndex;
+    const grad = item.stim.slots[ci].grad;
+    rec.chosen = item.stim.slots.map(function(_, i){ return chosen[i]; });
+    rec.authored = item.stim.slots.map(function(slot, i){ return (slot.grad || slot.opts)[rec.chosen[i]]; });
+    const shift = shiftRung(rec.chosen[ci], item.step, grad.length - 1);
+    rec.chosenLevel = rec.chosen[ci];
+    rec.presentedLevel = shift.level;
+    rec.stepApplied = shift.applied;
+    rec.stepDirection = shift.dir;
+    rec.ceilingHit = shift.applied !== item.step;
+    rec.presented = rec.authored.slice();
+    rec.presented[ci] = grad[shift.level];
+    rec.criticalAuthored = grad[rec.chosenLevel];
+    rec.criticalPresented = grad[shift.level];
+    rec.authoredIsStat = rec.chosenLevel === grad.length - 1;
+    rec.presentedIsStat = rec.presentedLevel === grad.length - 1;
+    rec.charDelta = rec.criticalPresented.length - rec.criticalAuthored.length;
+    rec.regionChars = rec.presented.map(function(s){ return s.length; });
+    rec.criticalWords = rec.criticalPresented.split(/\s+/).length;
+    stagePolishing(item, rec);
+  };
+}
+
+function stagePolishing(item, rec){
+  screenEl('<div id="stage"><div class="mut">The assistant is polishing your draft\u2026</div></div>');
+  const lo = CONFIG.polishDelayMs[0], hi = CONFIG.polishDelayMs[1];
+  setTimeout(function(){ stageRead(item, rec); }, lo + Math.random() * (hi - lo));
+}
+
+function stageRead(item, rec){
+  screenEl('<div id="stage"><div id="sentence" class="fix">+</div></div><div class="hint">Press the space bar for the next sentence</div>');
+  const el = document.getElementById("sentence");
+  rec.readingMs = [];
+  const tabsBefore = DATA.meta.tabSwitches;
+  let i = -1, onset = 0, armed = false, keyDown = false;
+  function present(){
+    if (i < 0){ el.textContent = "+"; el.className = "fix"; }
+    else { el.textContent = rec.presented[i]; el.className = ""; }
+    armed = false;
+    onPainted(function(t){ onset = t; armed = true; });
+  }
+  function advance(){
+    if (!armed) return;
+    const rt = performance.now() - onset;
+    if (rt < CONFIG.minRT) return;
+    if (i >= 0) rec.readingMs.push(Math.round(rt));
+    i++;
+    if (i >= rec.presented.length){
+      document.removeEventListener("keydown", down);
+      document.removeEventListener("keyup", up);
+      rec.flaggedSlow = rec.readingMs.some(function(x){ return x > CONFIG.maxRT; });
+      rec.tabSwitchesDuringRead = DATA.meta.tabSwitches - tabsBefore;
+      return stageRatings(item, rec);
+    }
+    present();
+  }
+  function down(e){ if (e.key !== CONFIG.advanceKey) return; e.preventDefault(); if (keyDown) return; keyDown = true; advance(); }
+  function up(e){ if (e.key === CONFIG.advanceKey) keyDown = false; }
+  document.addEventListener("keydown", down);
+  document.addEventListener("keyup", up);
+  present();
+}
+
+/* Several ratings in random order. Only "meaning" is the target; the rest are
+   fillers so nothing singles out the manipulated dimension. One real trial also
+   carries a slider attention check. */
+function stageRatings(item, rec){
+  const items = [
+    { id:"clarity",    q:"How clear is the polished draft?",             l:"Not at all clear", r:"Very clear" },
+    { id:"formality",  q:"How formal does it sound?",                    l:"Very casual",      r:"Very formal" },
+    { id:"meaning",    q:"How much does it still say what you meant?",   l:"Not at all",       r:"Completely" },
+    { id:"persuasive", q:"How persuasive is it?",                        l:"Not at all",       r:"Very persuasive" }
+  ];
+  const withAttn = !rec.practice && rec.index === CONFIG.attn2TrialIndex;
+  if (withAttn) items.push({ id:"attn2", q:"For this item, please drag the slider all the way to the left.", l:"", r:"" });
+  const order = shuffle(items);
+  rec.ratingOrder = order.map(function(x){ return x.id; });
+  screenEl('<h2>Your polished draft</h2><p class="mut">Please rate the version you just read. Move or click each slider to answer.</p>' +
+    order.map(function(x){ return sliderHTML("r_" + x.id, x.q, x.l, x.r); }).join("") +
+    '<div class="row"><button id="go" disabled>Continue</button></div>');
+  const ids = order.map(function(x){ return "r_" + x.id; });
+  wireSliders(ids, document.getElementById("go"));
+  onPainted(function(t0){
+    document.getElementById("go").onclick = function(){
+      rec.ratings = {};
+      order.forEach(function(x){ rec.ratings[x.id] = +document.getElementById("r_" + x.id).value; });
+      rec.attn2Passed = withAttn ? rec.ratings.attn2 <= 5 : null;
+      delete rec.ratings.attn2;
+      rec.meaningRating = rec.ratings.meaning;
+      rec.reportedChange = rec.meaningRating < CONFIG.meaningThreshold;
+      rec.ratingsRT = Math.round(performance.now() - t0);
+      if (rec.reportedChange) return stageLocate(item, rec);
+      rec.locatedIndex = null;
+      stageProbe(item, rec);
+    };
+  });
+}
+
+function stageLocate(item, rec){
+  let html = '<h2>Which sentence felt most different from what you meant?</h2><ol class="sent">';
+  rec.presented.forEach(function(s, i){ html += '<li data-i="' + i + '">' + s + '</li>'; });
+  html += '</ol><div class="row"><button id="go" disabled>Continue</button><button id="unsure" class="ghost">I am not sure which one</button></div>';
+  screenEl(html);
+  let pick = null;
+  Array.prototype.forEach.call(document.querySelectorAll("ol.sent li"), function(li){
+    li.onclick = function(){
+      Array.prototype.forEach.call(document.querySelectorAll("ol.sent li"), function(x){ x.classList.remove("sel"); });
+      li.classList.add("sel"); pick = +li.dataset.i; document.getElementById("go").disabled = false;
+    };
+  });
+  document.getElementById("go").onclick = function(){ rec.locatedIndex = pick; stageProbe(item, rec); };
+  document.getElementById("unsure").onclick = function(){ rec.locatedIndex = -1; stageProbe(item, rec); };
+}
+
+/* Generic justification prompt + three sliders in random order (only "forceful"
+   is the target). Always about the critical sentence, edited or not. */
+function stageProbe(item, rec){
+  const ci = item.stim.criticalIndex;
+  const items = [
+    { id:"strength", q:"How forceful does this sentence sound?",      l:"Very tentative",    r:"Very forceful" },
+    { id:"agree",    q:"How much do you agree with this sentence?",   l:"Strongly disagree", r:"Strongly agree" },
+    { id:"natural",  q:"How natural does this sentence sound?",       l:"Not at all natural",r:"Very natural" }
+  ];
+  const order = shuffle(items);
+  rec.probeOrder = order.map(function(x){ return x.id; });
+  screenEl('<h2>About one of your sentences</h2><p class="mut">Your draft said:</p>' +
+    '<p class="quote">' + rec.presented[ci] + '</p>' +
+    '<label class="q" for="why">In a sentence or two, why did you choose this wording? (Please do not include personal details.)</label>' +
+    '<textarea id="why"></textarea>' +
+    order.map(function(x){ return sliderHTML("p_" + x.id, x.q, x.l, x.r); }).join("") +
+    '<div class="row"><button id="go" disabled>Continue</button></div>');
+  const why = document.getElementById("why");
+  const ids = order.map(function(x){ return "p_" + x.id; });
+  const check = wireSliders(ids, document.getElementById("go"), function(){ return why.value.trim().length >= CONFIG.minProbeChars; });
+  why.addEventListener("input", check);
+  onPainted(function(t0){
+    document.getElementById("go").onclick = function(){
+      rec.probeText = why.value.trim();
+      rec.probeStrengthRating = +document.getElementById("p_strength").value;
+      rec.probeAgreeRating = +document.getElementById("p_agree").value;
+      rec.probeNaturalRating = +document.getElementById("p_natural").value;
+      rec.probeRT = Math.round(performance.now() - t0);
+      rec.probeShown = rec.presented[ci];
+      stagePost(item, rec);
+    };
+  });
+}
+
+function stagePost(item, rec){
+  screenEl('<h2>' + esc(item.stim.topic) + '</h2>' +
+    sliderHTML("s", "Having worked on that: how much do you support this idea now?", "Strongly oppose", "Strongly support", rec.sliderPre) +
+    '<div class="row"><button id="go" disabled>' + (pos + 1 >= TRIAL_PLAN.length ? "Finish rounds" : "Next round") + '</button></div>');
+  wireSliders(["s"], document.getElementById("go"));
+  document.getElementById("go").onclick = function(){
+    rec.sliderPost = +document.getElementById("s").value;
+    rec.sliderShift = rec.sliderPost - rec.sliderPre;
+    (rec.practice ? DATA.practice : DATA.trials).push(rec);
+    backup();
+    pos++;
+    runTrial();
+  };
+}
+
+function computeQuality(){
+  const q = { reasons: [] };
+  q.totalSeconds = Math.round((new Date(DATA.meta.endedISO) - new Date(DATA.meta.startedISO)) / 1000);
+  const rts = [];
+  DATA.trials.forEach(function(t){ (t.readingMs || []).forEach(function(x){ rts.push(x); }); });
+  q.medianReadMs = median(rts);
+  q.tabSwitches = DATA.meta.tabSwitches;
+  q.attention1Passed = DATA.attentionCheck ? DATA.attentionCheck.passed : null;
+  const a2 = DATA.trials.filter(function(t){ return t.attn2Passed !== null && t.attn2Passed !== undefined; });
+  q.attention2Passed = a2.length ? a2[0].attn2Passed : null;
+  q.screenerCorrect = DATA.screener.correct;
+  if (q.attention1Passed === false) q.reasons.push("failed attention check 1");
+  if (q.attention2Passed === false) q.reasons.push("failed attention check 2");
+  if (q.totalSeconds < CONFIG.minSessionSeconds) q.reasons.push("session faster than " + CONFIG.minSessionSeconds + "s");
+  if (q.medianReadMs !== null && q.medianReadMs < CONFIG.minMedianReadMs) q.reasons.push("median sentence reading time under " + CONFIG.minMedianReadMs + "ms");
+  q.flagged = q.reasons.length > 0;
+  return q;
+}
+
+function screenEnd(){
+  DATA.frames = FrameMon.stop();
+  DATA.meta.endedISO = new Date().toISOString();
+  DATA.quality = computeQuality();
+  backup();
+  screenSuspicionCheck();
+}
+
+/* Asked BEFORE the debrief: identifies anyone who guessed the manipulation. */
+function screenSuspicionCheck(){
+  screenEl('<h2>Almost done \u2014 two last questions</h2>' +
+    '<label class="q" for="q1">In your own words, what do you think this study was actually investigating?</label><textarea id="q1"></textarea>' +
+    '<label class="q" for="q2">Did anything feel unusual or off about the sentences you read? If so, what? (Please do not include personal details.)</label><textarea id="q2"></textarea>' +
+    '<div class="row"><button id="go">Continue</button></div>');
+  document.getElementById("go").onclick = function(){
+    DATA.suspicionCheck = { guessedPurpose: document.getElementById("q1").value.trim(), noticedAnything: document.getElementById("q2").value.trim() };
+    backup();
+    submitData();
+  };
+}
+
+/* Fire-and-forget POST (mode "no-cors" is the standard way to post to an Apps Script
+   Web App from a static page). The response is opaque, so success can't be confirmed;
+   we therefore send twice and the server de-duplicates on the participant code. */
+function submitData(){
+  screenEl('<h2>Submitting your responses\u2026</h2><p class="mut">This only takes a moment. Please keep this window open.</p>');
+  const canSend = CONFIG.submitUrl && (CONFIG.irbApproved || PIPELINE_TEST);
+  if (!canSend) return finishSubmission(false, false);
+  const body = JSON.stringify(DATA);
+  let tries = 0;
+  (function send(){
+    tries++;
+    fetch(CONFIG.submitUrl, { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: body })
+      .then(function(){ if (tries < 2) setTimeout(send, 1500); else finishSubmission(true, false); })
+      .catch(function(){ if (tries < 3) setTimeout(send, 1500); else finishSubmission(false, true); });
+  })();
+}
+
+function finishSubmission(sent, failed){
+  if (!failed) markDone();
+  showDebrief(sent, failed);
+}
+
+function showDebrief(sent, failed){
+  const code = DATA.participant.code || "unknown";
+  const contact = esc(CONFIG.contactEmail || "[researcher email]");
+  screenEl('<h1>Thank you \u2014 here is what this was actually about</h1>' +
+    (failed ? '<div class="fail"><p><b>Your responses could not be sent automatically.</b> Please use the button below to save a copy and ' +
+              'email it to ' + contact + '. Sorry for the trouble.</p></div>' : '') +
+    '<p>The study is about how carefully people read AI-suggested edits to their own writing, and whether they notice when an edit ' +
+    'changes not just wording but how strongly a sentence commits to a claim.</p>' +
+    '<p>On most rounds, one sentence in your \u201cpolished\u201d draft was deliberately made more cautious or more forceful than the ' +
+    'version you chose \u2014 sometimes by a little, sometimes by a lot, and on the strongest edits a specific (invented) statistic was ' +
+    'added. On some rounds nothing was changed. This was not disclosed beforehand because the study measures whether people notice ' +
+    'such changes naturally, without being told to look for them. None of the statistics in the passages are real.</p>' +
+    '<p>Your responses are anonymous, so we are not able to remove your individual data once it has been submitted. If you have any ' +
+    'concerns, or questions about the study, you are welcome to contact ' + contact +
+    (CONFIG.sponsorEmail ? ' or ' + esc(CONFIG.sponsorEmail) + ' (Adult Sponsor)' : '') + '.</p>' +
+    '<p class="mut">Thank you again for your time \u2014 it genuinely helps this project.</p>' +
+    '<p class="mut" style="margin-top:22px">Reference code: ' + code + '</p>' +
+    '<div class="row"><button id="dl" class="' + (failed ? '' : 'ghost') + '">Download a copy of your responses</button>' +
+    (CONFIG.completionUrl && !failed ? '<a href="' + esc(CONFIG.completionUrl) + '"><button type="button">Return to confirm completion</button></a>' : '') + '</div>');
+  document.getElementById("dl").onclick = function(){
+    download("study_" + code + ".json", JSON.stringify(DATA, null, 2), "application/json");
+  };
+}
+
+function download(name, text, mime){
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name; a.click();
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+}
+
+screenGate();
+</script>
+</body>
+</html>
